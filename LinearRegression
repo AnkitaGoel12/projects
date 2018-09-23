@@ -1,0 +1,256 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+%matplotlib inline
+
+credit_data_df = pd.read_csv("CREDIT CARD USERS DATA.csv")
+credit_data_df.head(5)
+credit_data_df.columns
+credit_data_df['carbought'].unique()
+credit_data_df['card2spent'].min()
+
+# Pandas scatter plot
+credit_data_df.plot(x='age', y='card2spent',kind='scatter')M
+
+credit_data = credit_data_df.drop(['pets', 'pets_cats', 'pets_dogs', 'pets_birds', 'pets_reptiles', 'pets_small', 'pets_saltfish', 'pets_freshfish','custid','birthmonth'], axis=1)
+credit_data['avg_card_spent'] = (credit_data['cardspent'] + credit_data['card2spent'])/2
+credit_data.drop(['cardspent', 'card2spent'], axis=1, inplace = True)
+
+numeric_var_names=[key for key in dict(credit_data.dtypes) if dict(credit_data.dtypes)[key] in ['float64', 'int64', 'float32', 'int32']]
+cat_var_names=[key for key in dict(credit_data.dtypes) if dict(credit_data.dtypes)[key] in ['object']]
+print(numeric_var_names)
+print(cat_var_names)
+
+credit_data_num = credit_data[numeric_var_names]
+print(credit_data_num.head(5))
+credit_data_num = credit_data._get_numeric_data()
+print(credit_data_num.head(5))
+
+def var_summary(x):
+    return pd.Series([x.count(), x.isnull().sum(), x.sum(), x.mean(), x.median(),  x.std(), x.var(), x.min(), x.dropna().quantile(0.01), x.dropna().quantile(0.05),x.dropna().quantile(0.10),x.dropna().quantile(0.25),x.dropna().quantile(0.50),x.dropna().quantile(0.75), x.dropna().quantile(0.90),x.dropna().quantile(0.95), x.dropna().quantile(0.99),x.max()], 
+                  index=['N', 'NMISS', 'SUM', 'MEAN','MEDIAN', 'STD', 'VAR', 'MIN', 'P1' , 'P5' ,'P10' ,'P25' ,'P50' ,'P75' ,'P90' ,'P95' ,'P99' ,'MAX'])
+
+num_summary=credit_data_num.apply(lambda x: var_summary(x)).T
+num_summary
+
+miss_no=credit_data_num.apply(lambda x: x.isnull().sum()).T
+miss_no = pd.DataFrame(miss_no)
+miss_no.columns = ['Total_Missing_values']
+print(miss_no[miss_no['Total_Missing_values'] > 2000])
+
+#dropping above 6 variables as more than 50% of data is missing in these columns
+credit_data_num.drop(['lntollmon', 'lntollten', 'lnequipmon','lnequipten','lnwiremon','lnwireten'], axis=1, inplace=True)
+credit_data_num.shape
+
+num_summary.to_csv('num_summary.csv')
+
+def missingImputation(x):
+    x=x.fillna(x.mean())
+    return x
+
+credit_data_num = credit_data_num.apply(lambda x: missingImputation(x))
+num_summary=credit_data_num.apply(lambda x: var_summary(x)).T
+sns.boxplot(y='avg_card_spent', data= credit_data_num)
+
+def cappingOutliers(x):
+    x= x.clip_upper(x.quantile(0.99)) 
+    return x
+
+credit_data_num.apply(lambda x : cappingOutliers(x)).T
+credit_data_final = credit_data_num
+credit_data_final.head(5)
+
+sns.boxplot(y='avg_card_spent', data= credit_data_final)
+sns.distplot(credit_data_final.avg_card_spent)
+credit_data_final['ln_avg_card_spent'] = np.log(credit_data_final['avg_card_spent'] + 10)
+sns.distplot(credit_data_final['ln_avg_card_spent'])
+credit_data_final = credit_data_final.drop(['avg_card_spent'], axis=1)
+credit_data_final.to_csv("details.csv")
+
+# correlation matrix (ranges from 1 to -1)
+plt.figure(figsize=(25, 15))
+sns.heatmap(credit_data_final.corr(), cmap="YlGnBu")
+
+#Splitting the data
+feature_columns = credit_data_final.columns.difference( ['ln_avg_card_spent'] )
+from sklearn.cross_validation import train_test_split
+train_X, test_X, train_y, test_y = train_test_split(credit_data_final[feature_columns],
+                                                  credit_data_final['ln_avg_card_spent'],
+                                                  test_size = 0.3,
+                                                  random_state = 123)
+#Model Fitting
+
+#Method 1 using statsmodels library
+import statsmodels.api as sm
+train_X = sm.add_constant(train_X)
+lm = sm.OLS(train_y, train_X).fit()
+print(lm.summary())
+print('Parameters: ', lm.params)
+print('R2: ', lm.rsquared)
+x = lm.pvalues
+print(x)
+test_X = sm.add_constant(test_X)
+y_pred = lm.predict(test_X)
+# calculate these metrics by hand!
+from sklearn import metrics
+import numpy as np
+print('MAE:', metrics.mean_absolute_error(test_y, y_pred))
+print('MSE:', metrics.mean_squared_error(test_y, y_pred))
+print('RMSE:', np.sqrt(metrics.mean_squared_error(test_y, y_pred)))
+
+#Method 2 using sklearn library
+from sklearn.model_selection import train_test_split
+train ,test = train_test_split(credit_data_final,test_size=0.3,random_state = 123 ) 
+train.columns= [phrase.strip().replace('_', '') for phrase in train.columns]
+all_columns = "+".join(train.columns.difference( ['ln_avg_card_spent'] ))
+print(all_columns)
+my_formula = "lnavgcardspent~" + all_columns
+print(my_formula)
+import statsmodels.formula.api as smf
+lm=smf.ols(formula=my_formula, data=train).fit()
+lm.summary()
+
+#Using VIF for feature selection
+#Looking at the above results we see there is high multicollinearity. So we will eliminate some variables based on VIF
+# For each X, calculate VIF and save in dataframe
+import statsmodels as sm
+from statsmodels.stats.outliers_influence import variance_inflation_factor
+from patsy import dmatrices
+data_columns=credit_data_final.columns
+columns_x = "+".join(data_columns.difference( ['ln_avg_card_spent'] ))
+print(columns_x)
+my_formula = "ln_avg_card_spent~" + columns_x
+print(my_formula)
+y,X = dmatrices(my_formula, credit_data_final, return_type='dataframe')
+vif = pd.DataFrame()
+vif["VIF Factor"] = [variance_inflation_factor(X.values, i) for i in range(X.shape[1])]
+vif["features"] = X.columns
+vif.sort_values(by='VIF Factor', ascending = False, inplace=True)
+vif.reset_index(inplace=True, drop=True)
+vif.head(10)
+high_vif_features = list(vif[vif['VIF Factor'] > 9]['features'])
+high_vif_features
+credit_data_final.drop(high_vif_features, inplace=True)
+data_columns=credit_data_final.columns
+columns_x = "+".join(data_columns.difference( ['ln_avg_card_spent'] ))
+print(columns_x)
+my_formula = "ln_avg_card_spent~" + columns_x
+
+#Modelling the data again after removing variables with high VIF
+lm1=smf.ols(my_formula, credit_data_final).fit()
+lm1.summary()
+y_pred = lm1.predict(test_X)
+#calculate these metrics by hand!
+from sklearn import metrics
+import numpy as np
+print('MAE:', metrics.mean_absolute_error(test_y, y_pred))
+print('MSE:', metrics.mean_squared_error(test_y, y_pred))
+print('RMSE:', np.sqrt(metrics.mean_squared_error(test_y, y_pred)))
+sns.distplot(lm1.resid)
+sns.jointplot(credit_data_final.ln_avg_card_spent, lm1.predict(credit_data_final) )
+
+train_X, test_X, train_y, test_y = train_test_split(credit_data_final,test_size=0.3,random_state = 123 ) 
+linreg = LinearRegression()
+linreg.fit(train_X, train_y)
+linreg.coef_
+y_pred_t = linreg.predict(train_X)
+rmse_t = np.sqrt( metrics.mean_squared_error(train_y, y_pred_t))
+print(rmse_t)
+print(metrics.r2_score(train_y, y_pred_t))
+y_pred = linreg.predict( test_X )
+rmse = np.sqrt( metrics.mean_squared_error( test_y, y_pred ) )
+print(rmse)
+print(metrics.r2_score(test_y, y_pred))
+residuals = train_y - y_pred_t
+sns.jointplot(train_y, residuals)
+sns.distplot( residuals )
+
+# To ensure residues are random i.e. normally distributed a Q-Q plot can be used
+# Q-Q plot shows if the residuals are plotted along the line.
+from scipy import stats
+import pylab
+stats.probplot(residuals, dist="norm", plot=pylab )
+pylab.show()
+
+### K-FOLD CROSS VALIDATION
+from sklearn.cross_validation import cross_val_score
+linreg = LinearRegression()
+cross_val_score(linreg, train_X, train_y, scoring = 'r2', cv = 10)
+round( np.mean( cross_val_score( linreg,
+                              train_X,
+                              train_y,
+                              scoring = 'r2',
+                              cv = 10 ) ), 2 )
+ 
+### Feature Selection based on importance
+from sklearn.feature_selection import f_regression
+F_values, p_values  = f_regression(train_X, train_y)
+p_value_df = pd.DataFrame(p_values, columns=['p_values'])
+p_value_df.head()
+p_value_df['Var_Names']= train_X.columns
+p_value_df.head(5)
+F_values
+['%.3f' % p for p in p_values]
+drop_features = list(p_value_df[p_value_df['p_values'] > 0.05]['Var_Names'])
+p_value_df[p_value_df['p_values'] > 0.05].to_csv('NonSignificantVars.csv')
+
+credit_data_final.drop(drop_features, inplace=True)
+features_sig = list(credit_data_final.columns.difference('ln_avg_card_spent'))
+
+# Now building the model again using above data
+
+from sklearn.cross_validation import train_test_split
+train_X, test_X, train_y, test_y = train_test_split(credit_data_final[features_sig],
+                                                  credit_data_final['ln_avg_card_spent'],
+                                                  test_size = 0.3,
+                                                  random_state = 123)
+linreg = LinearRegression()
+linreg.fit( train_X, train_y )
+linreg.coef_
+y_pred_t = linreg.predict(train_X)
+rmse_t = np.sqrt( metrics.mean_squared_error( train_y, y_pred_t) )
+print(rmse_t)
+print(metrics.r2_score( train_y, y_pred_t ))
+cross_val_score(linreg, train_X, train_y, scoring = 'r2', cv = 10 )
+round( np.mean( cross_val_score( linreg,
+                              train_X,
+                              train_y,
+                              scoring = 'r2',
+                              cv = 10 ) ), 2 )
+y_pred_t = linreg.predict(train_X)
+rmse_t = np.sqrt( metrics.mean_squared_error( train_y, y_pred_t) )
+print(rmse_t)
+print(metrics.r2_score( train_y, y_pred_t ))
+# calculate these metrics by hand!
+from sklearn import metrics
+import numpy as np
+print('MAE:', metrics.mean_absolute_error(test_y, y_pred))
+print('MSE:', metrics.mean_squared_error(test_y, y_pred))
+print('RMSE:', np.sqrt(metrics.mean_squared_error(test_y, y_pred)))
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
